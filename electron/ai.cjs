@@ -79,9 +79,10 @@ const IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'avif', '
 const DOC_EXT = new Set(['pdf', 'docx', 'txt', 'md', 'rtf', 'odt'])
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-async function http(url, { method = 'GET', body, timeout = 120000, headers = {} } = {}) {
+async function http(url, { method = 'GET', body, timeout = 120000, headers = {}, signal } = {}) {
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), timeout)
+  if (signal) { if (signal.aborted) ctrl.abort(); else signal.addEventListener('abort', () => ctrl.abort(), { once: true }) }
   try {
     const r = await fetch(url, { method, signal: ctrl.signal, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined })
     const text = await r.text()
@@ -96,8 +97,38 @@ function createAI({ getConfig, userData, distDir, BrowserWindow, getKey }) {
   const cacheFile = path.join(userData, 'ai-cache.json')
   let cache = {}
   try { cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')) } catch {}
+  // Limpieza: fuera lo que lleva más de 180 días sin usarse y como mucho 100.000 entradas
+  {
+    const limit = Date.now() - 180 * 864e5
+    let entries = Object.entries(cache).filter(([, v]) => (v.t || 0) > limit || !v.t)
+    if (entries.length > 100000) entries = entries.sort((a, b) => (b[1].t || 0) - (a[1].t || 0)).slice(0, 100000)
+    cache = Object.fromEntries(entries)
+  }
   let saveTimer
   const saveCache = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => { try { fs.writeFileSync(cacheFile, JSON.stringify(cache)) } catch {} }, 1500) }
+
+  // ---------- cancelar ----------
+  // Al pulsar «Cancelar» se cortan las peticiones a la IA que estén en marcha.
+  let abortCtl = new AbortController()
+  const abort = () => { abortCtl.abort(); abortCtl = new AbortController() }
+  const CANCELLED = 'cancelled'
+  function abortable(promise, signal) {
+    if (signal.aborted) return Promise.reject(new Error(CANCELLED))
+    return Promise.race([promise, new Promise((_, rej) => signal.addEventListener('abort', () => rej(new Error(CANCELLED)), { once: true }))])
+  }
+
+  // ---------- huella del contenido ----------
+  // Tamaño + primeros y últimos 64 KB: reconoce el archivo aunque lo renombres o lo muevas.
+  async function fingerprint(file, size) {
+    const fh = await fsp.open(file, 'r')
+    try {
+      const n = Math.min(65536, size)
+      const a = Buffer.alloc(n), b = Buffer.alloc(n)
+      await fh.read(a, 0, n, 0)
+      await fh.read(b, 0, n, Math.max(0, size - n))
+      return crypto.createHash('sha1').update(String(size)).update(a).update(b).digest('hex')
+    } finally { await fh.close() }
+  }
 
   // ---------- ventana oculta (Chromium) para imágenes y vídeos ----------
   let worker = null
@@ -154,7 +185,7 @@ function createAI({ getConfig, userData, distDir, BrowserWindow, getKey }) {
     return JSON.parse(m ? m[0] : t || '{}')
   }
 
-  async function chat({ prompt, images = [], labels }) {
+  async function chat({ prompt, images = [], labels, signal }) {
     const c = ai()
     const model = modelOf(c)
     if (!model) throw new Error('Elige un modelo en Ajustes → IA')
@@ -167,6 +198,7 @@ function createAI({ getConfig, userData, distDir, BrowserWindow, getKey }) {
       const r = await http(`${trim(c.ollamaUrl)}/api/chat`, {
         method: 'POST',
         body: { model, stream: false, format: schema, keep_alive: '15m', options: { temperature: 0, num_ctx: 4096 }, messages: [{ role: 'user', content: prompt, ...(images.length ? { images } : {}) }] },
+        signal,
       })
       raw = r.message?.content
     } else if (c.provider === 'lmstudio' || c.provider === 'openai') {
@@ -175,24 +207,25 @@ function createAI({ getConfig, userData, distDir, BrowserWindow, getKey }) {
       const content = [{ type: 'text', text: prompt }, ...images.map((b) => ({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b}` } }))]
       const body = { model, temperature: 0, max_tokens: 300, messages: [{ role: 'user', content }], response_format: { type: 'json_schema', json_schema: { name: 'clasificacion', strict: true, schema: { ...schema, additionalProperties: false } } } }
       let r
-      try { r = await http(`${base}/chat/completions`, { method: 'POST', body, headers }) }
+      try { r = await http(`${base}/chat/completions`, { method: 'POST', body, headers, signal }) }
       catch (e) {
         if (!/^4\d\d/.test(e.message)) throw e
         delete body.response_format // algunos servicios no aceptan json_schema: pedimos el JSON en el texto
-        r = await http(`${base}/chat/completions`, { method: 'POST', body, headers })
+        if (signal?.aborted) throw new Error(CANCELLED)
+        r = await http(`${base}/chat/completions`, { method: 'POST', body, headers, signal })
       }
       raw = r.choices?.[0]?.message?.content
     } else if (c.provider === 'anthropic') {
       const content = [...images.map((b) => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b } })), { type: 'text', text: prompt + '\nResponde SOLO con un objeto JSON {"carpeta": "...", "descripcion": "..."}.' }]
       const r = await http('https://api.anthropic.com/v1/messages', {
-        method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+        method: 'POST', signal, headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
         body: { model, max_tokens: 300, temperature: 0, messages: [{ role: 'user', content }] },
       })
       raw = (r.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('')
     } else if (c.provider === 'gemini') {
       const parts = [{ text: prompt + '\nResponde SOLO con un objeto JSON {"carpeta": "...", "descripcion": "..."}.' }, ...images.map((b) => ({ inline_data: { mime_type: 'image/jpeg', data: b } }))]
       const r = await http(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model.replace(/^models\//, ''))}:generateContent`, {
-        method: 'POST', headers: { 'x-goog-api-key': key },
+        method: 'POST', signal, headers: { 'x-goog-api-key': key },
         body: { contents: [{ role: 'user', parts }], generationConfig: { temperature: 0, responseMimeType: 'application/json' } },
       })
       raw = r.candidates?.[0]?.content?.parts?.map((p) => p.text).join('')
@@ -202,11 +235,11 @@ function createAI({ getConfig, userData, distDir, BrowserWindow, getKey }) {
     return { label: label?.name || null, desc: parsed.descripcion || '' }
   }
 
-  async function laya(text, labels) {
+  async function laya(text, labels, signal) {
     const c = ai().laya
     const criteria = Object.fromEntries(labels.map((l) => [l.name, l.hint || l.name]))
     const r = await http(`${c.url.replace(/\/$/, '')}/v1/systemone`, {
-      method: 'POST', timeout: 30000,
+      method: 'POST', timeout: 30000, signal,
       body: { state: { body: text.slice(0, 3000) }, questions: { carpeta: { type: 'choice', instructions: '¿En qué carpeta guardarías este documento?', criteria } } },
     })
     const a = r.answers?.carpeta
@@ -232,8 +265,14 @@ function createAI({ getConfig, userData, distDir, BrowserWindow, getKey }) {
     if (kind === 'video' && (!c.videos || !VIDEO_EXT.has(ext))) return null
     if (kind === 'document' && (!c.documents || !DOC_EXT.has(ext))) return null
     const labels = (c.labels?.[kind] || DEFAULT_LABELS[kind]).filter((l) => l.name)
-    const key = crypto.createHash('sha1').update([file, st.size, st.mtimeMs, c.provider, modelOf(c), c.laya.enabled, c.privateMode, JSON.stringify(labels)].join('|')).digest('hex')
-    if (cache[key] && (!needLabel || cache[key].full)) return cache[key]
+    const signal = abortCtl.signal
+    let fp
+    try { fp = await fingerprint(file, st.size) } catch { return null }
+    const key = crypto.createHash('sha1').update([fp, c.provider, modelOf(c), c.laya.enabled, c.privateMode, JSON.stringify(labels)].join('|')).digest('hex')
+    if (cache[key] && (!needLabel || cache[key].full)) {
+      cache[key].t = Date.now(); saveCache()
+      return { ...cache[key], cached: true }
+    }
 
     const out = { kind }
     try {
@@ -242,30 +281,31 @@ function createAI({ getConfig, userData, distDir, BrowserWindow, getKey }) {
         const text = (await docText(file)).replace(/\s+/g, ' ').trim()
         if (text.length < 30) return null
         if (c.laya.enabled) {
-          try { Object.assign(out, await laya(text, labels), { by: 'Laya' }) } catch (e) { out.error = 'Laya no responde' }
+          try { Object.assign(out, await laya(text, labels, signal), { by: 'Laya' }) } catch (e) { if (signal.aborted) throw new Error(CANCELLED); out.error = 'Laya no responde' }
         }
         if (!out.label || out.label === 'Otros' || (out.conf != null && out.conf < 0.5)) { // Laya duda → segunda opinión
           const prompt = `Eres el clasificador de documentos de un organizador de archivos. Lee el inicio del documento y elige UNA carpeta.\nCarpetas:\n${listText(labels)}\n\nNombre del archivo: ${path.basename(file)}\nTexto:\n"""${text.slice(0, 2500)}"""\n\nResponde en JSON. En "descripcion" resume en menos de 8 palabras de qué trata.`
-          Object.assign(out, await chat({ prompt, labels }), { by: modelOf(c), error: undefined })
+          Object.assign(out, await chat({ prompt, labels, signal }), { by: modelOf(c), error: undefined })
         }
       } else {
         const wantNsfw = c.privateMode !== 'off' || CLOUD.has(c.provider) // con APIs en la nube, el filtro local va siempre
-        const m = await analyzeMedia(file, kind, wantNsfw)
+        const m = await abortable(analyzeMedia(file, kind, wantNsfw), signal)
         if (!m.ok) { out.error = m.error; return out }
         out.nsfw = m.nsfw
         out.private = isPrivate(m.nsfw)
         if (needLabel && !out.private) {
           const what = kind === 'video' ? `Estas ${m.images.length} imágenes son fotogramas de un mismo vídeo.` : 'Mira la imagen.'
           const prompt = `Eres el clasificador de ${kind === 'video' ? 'vídeos' : 'fotos'} de un organizador de archivos. ${what} Elige UNA carpeta de la lista.\nCarpetas:\n${listText(labels)}\n\nResponde en JSON. En "descripcion" describe lo que se ve en menos de 8 palabras, en español.`
-          Object.assign(out, await chat({ prompt, images: m.images, labels }), { by: modelOf(c) })
+          Object.assign(out, await chat({ prompt, images: m.images, labels, signal }), { by: modelOf(c) })
         }
       }
     } catch (e) {
+      if (signal.aborted || e.message === CANCELLED || e.name === 'AbortError') return { kind, cancelled: true }
       out.error = /ECONNREFUSED|fetch failed/.test(e.message) ? `${PROVIDER_NAME[c.provider]} no responde` : /^401|^403/.test(e.message) ? 'Clave de API no válida' : /^429/.test(e.message) ? 'Límite de la API alcanzado' : e.message.slice(0, 160)
       return out
     }
     out.full = needLabel || !!out.private
-    if (!out.error) { cache[key] = out; saveCache() }
+    if (!out.error) { cache[key] = { ...out, t: Date.now() }; saveCache() }
     return out
   }
 
@@ -359,8 +399,9 @@ function createAI({ getConfig, userData, distDir, BrowserWindow, getKey }) {
 
   const dispose = () => { if (worker && !worker.isDestroyed()) worker.destroy() }
   const clearCache = () => { cache = {}; saveCache() }
+  const cacheInfo = () => ({ entries: Object.keys(cache).length })
 
-  return { classify, status, pull, gpu, recommend, test, dispose, clearCache, KIND_BY_CAT }
+  return { classify, status, pull, gpu, recommend, test, dispose, clearCache, cacheInfo, abort, KIND_BY_CAT }
 }
 
 module.exports = { createAI, defaultAIConfig, DEFAULT_LABELS, MODELS, CLOUD, PROVIDER_NAME }

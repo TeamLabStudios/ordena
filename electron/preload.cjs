@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('ordena', {
   checkUpdates: () => ipcRenderer.invoke('update:check'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   cancelPlan: () => ipcRenderer.invoke('plan:cancel'),
+  memory: () => ipcRenderer.invoke('memory:get'),
+  clearDismissed: () => ipcRenderer.invoke('memory:clearDismissed'),
   aiStatus: () => ipcRenderer.invoke('ai:status'),
   aiGpu: () => ipcRenderer.invoke('ai:gpu'),
   aiPull: (model) => ipcRenderer.invoke('ai:pull', model),

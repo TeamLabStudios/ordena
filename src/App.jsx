@@ -12,6 +12,7 @@ export default function App() {
   const [tab, setTab] = useState('inicio')
   const [hover, setHover] = useState(false)
   const [busy, setBusy] = useState(null) // null | 'plan' | 'run'
+  const [cancelling, setCancelling] = useState(false)
   const [progress, setProgress] = useState({ index: 0, total: 0 })
   const [aiName, setAiName] = useState(null)
   const [settingsSec, setSettingsSec] = useState(null)
@@ -58,10 +59,10 @@ export default function App() {
     setBusy('plan')
     setProgress({ index: 0, total: 0 })
     let p
-    try { p = await getPlan() } finally { setBusy(null); setAiName(null) }
+    try { p = await getPlan() } finally { setBusy(null); setAiName(null); setCancelling(false) }
     if (!p) return
-    if (p.cancelled) { say('Cancelado'); return }
-    const valid = p.items.filter((i) => !i.skip)
+    if (p.cancelled) { say(p.memo?.aiCached + p.memo?.aiNew ? 'Cancelado. Lo que ya analizó la IA queda en memoria.' : 'Cancelado'); return }
+    const valid = p.items.filter((i) => !i.skip && !i.dismissed)
     if (!valid.length) { say(p.forceMove ? 'No hay duplicados en el destino' : p.items.length ? 'Nada que mover: ya estaba ordenado' : 'No había archivos que ordenar'); return }
     if (cfgRef.current.preview || p.forceMove) setPlan(p)
     else execute(p, valid.map((i) => i.id))
@@ -181,7 +182,7 @@ export default function App() {
               <div className="drop-icon"><ArrowDownToLine size={26} strokeWidth={1.6} /></div>
               <h2>{dropTitle}</h2>
               <p>{dropSub}</p>
-              {busy === 'plan' && progress.total > 3 && <button className="ghost sm cancel" onClick={() => api.cancelPlan()}>Cancelar</button>}
+              {busy === 'plan' && <button className="ghost sm cancel" disabled={cancelling} onClick={() => { setCancelling(true); api.cancelPlan() }}>{cancelling ? 'Cancelando…' : 'Cancelar'}</button>}
               {busy && <div className="bar"><span style={{ width: `${progress.total ? pct : 15}%` }} className={progress.total ? '' : 'indet'} /></div>}
             </section>
 

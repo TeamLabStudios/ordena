@@ -1,10 +1,12 @@
 import { useMemo, useState, useEffect } from 'react'
-import { X, Copy as CopyIcon, Wand2, ScanSearch, Sparkles, Lock, AlertTriangle } from 'lucide-react'
+import { X, Copy as CopyIcon, Wand2, ScanSearch, Sparkles, Lock, AlertTriangle, Brain, EyeOff } from 'lucide-react'
 import { CatIcon, bytes } from './ui.jsx'
 
 export default function Preview({ plan, onCancel, onConfirm }) {
-  const valid = plan.items.filter((i) => !i.skip)
+  const valid = plan.items.filter((i) => !i.skip && !i.dismissed)
+  const dismissed = plan.items.filter((i) => !i.skip && i.dismissed)
   const skipped = plan.items.filter((i) => i.skip)
+  const memo = plan.memo || {}
   const [sel, setSel] = useState(() => new Set(valid.map((i) => i.id)))
   const [open, setOpen] = useState(() => new Set())
 
@@ -24,7 +26,7 @@ export default function Preview({ plan, onCancel, onConfirm }) {
   }, [plan])
 
   const toggle = (ids, on) => setSel((s) => { const n = new Set(s); ids.forEach((id) => (on ? n.add(id) : n.delete(id))); return n })
-  const total = valid.filter((i) => sel.has(i.id)).reduce((a, i) => a + (i.size || 0), 0)
+  const total = plan.items.filter((i) => sel.has(i.id)).reduce((a, i) => a + (i.size || 0), 0)
   const verb = plan.forceMove ? 'Apartar' : plan.copy ? 'Copiar' : 'Mover'
 
   return (
@@ -34,6 +36,9 @@ export default function Preview({ plan, onCancel, onConfirm }) {
           <div>
             <h2>{plan.forceMove ? 'Duplicados encontrados' : 'Vista previa'}</h2>
             <p>{valid.length} elementos · {groups.length} carpetas de destino{skipped.length ? ` · ${skipped.length} se omiten` : ''}</p>
+            {memo.aiCached + memo.aiNew > 0 && (
+              <p className="memo"><Brain size={12} /> IA: {memo.aiNew} {memo.aiNew === 1 ? 'nuevo analizado' : 'nuevos analizados'} · {memo.aiCached} ya {memo.aiCached === 1 ? 'conocido' : 'conocidos'} (memoria, al instante)</p>
+            )}
           </div>
           <button className="ghost icon" onClick={onCancel} title="Cerrar (Esc)"><X size={16} /></button>
         </header>
@@ -77,6 +82,17 @@ export default function Preview({ plan, onCancel, onConfirm }) {
               </section>
             )
           })}
+          {dismissed.length > 0 && (
+            <details className="pskipped">
+              <summary><EyeOff size={13} /> {dismissed.length} que desmarcaste otra vez (márcalos si ahora sí quieres moverlos)</summary>
+              <ul>{dismissed.map((it) => (
+                <li key={it.id}>
+                  <input type="checkbox" checked={sel.has(it.id)} onChange={(e) => toggle([it.id], e.target.checked)} />
+                  <span className="pname" title={it.src}>{it.name}</span><span className="tag">{it.rel.split(/[\\/]+/).join(' / ')}</span>
+                </li>
+              ))}</ul>
+            </details>
+          )}
           {skipped.length > 0 && (
             <details className="pskipped">
               <summary>{skipped.length} que no se tocan</summary>

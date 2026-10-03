@@ -43,10 +43,12 @@ async function moveAny(from, to, isDir) {
   }
 }
 
-function hashFile(file) {
+function hashFile(file, isCancelled) {
   return new Promise((resolve) => {
     const h = crypto.createHash('sha1')
-    fs.createReadStream(file).on('data', (d) => h.update(d)).on('end', () => resolve(h.digest('hex'))).on('error', () => resolve(null))
+    const rs = fs.createReadStream(file, { highWaterMark: 1 << 20 })
+    rs.on('data', (d) => { if (isCancelled?.()) { rs.destroy(); resolve(null) } else h.update(d) })
+      .on('end', () => resolve(h.digest('hex'))).on('error', () => resolve(null))
   })
 }
 
@@ -87,6 +89,47 @@ function createEngine({ getConfig, userData, onProgress, ai = null }) {
   let history = []
   try { history = JSON.parse(fs.readFileSync(histFile, 'utf8')) } catch {}
   const saveHistory = () => { try { fs.mkdirSync(userData, { recursive: true }); fs.writeFileSync(histFile, JSON.stringify(history.slice(0, 100))) } catch {} }
+
+  // ---------- memorias persistentes ----------
+  // hashes.json   → huella SHA-1 de cada archivo (para duplicados), clave ruta|tamaño|fecha
+  // dismissed.json → archivos que desmarcaste en la vista previa: no se vuelven a proponer
+  function store(name, maxAgeDays) {
+    const file = path.join(userData, name)
+    let data = {}
+    try { data = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
+    const limit = Date.now() - maxAgeDays * 864e5
+    for (const [k, v] of Object.entries(data)) if ((v.t || 0) < limit) delete data[k]
+    let timer
+    const save = () => { clearTimeout(timer); timer = setTimeout(() => { try { fs.mkdirSync(userData, { recursive: true }); fs.writeFileSync(file, JSON.stringify(data)) } catch {} }, 1500) }
+    return {
+      get: (k) => data[k],
+      set: (k, v) => { data[k] = { ...v, t: Date.now() }; save() },
+      del: (k) => { if (k in data) { delete data[k]; save() } },
+      count: () => Object.keys(data).length,
+      clear: () => { data = {}; save() },
+      keys: () => Object.keys(data),
+    }
+  }
+  const hashStore = store('hashes.json', 120)
+  const dismissedStore = store('dismissed.json', 365)
+  const fileKey = (p, st) => `${norm(p)}|${st.size}|${Math.round(st.mtimeMs)}`
+  async function cachedHash(p, isCancelled) {
+    let st
+    try { st = await fsp.stat(p) } catch { return null }
+    const k = fileKey(p, st)
+    const hit = hashStore.get(k)
+    if (hit) { hashStore.set(k, { h: hit.h }); return hit.h }
+    const h = await hashFile(p, isCancelled)
+    if (h) hashStore.set(k, { h })
+    return h
+  }
+  // Al arrancar: olvidar desmarcados cuyo archivo ya no existe
+  setTimeout(async () => {
+    for (const k of dismissedStore.keys()) {
+      const p = k.split('|')[0]
+      if (!(await exists(p))) dismissedStore.del(k)
+    }
+  }, 5000)
 
   // ---------- recolección ----------
   async function walk(dir, out, deep, cfg) {
@@ -131,7 +174,9 @@ function createEngine({ getConfig, userData, onProgress, ai = null }) {
     const raw = await collect(paths, opts, cfg)
     const dirIndex = new Map() // carpeta destino -> Map(tamaño -> [rutas])
     const hashes = new Map()
-    const hashOf = async (p) => { if (!hashes.has(p)) hashes.set(p, await hashFile(p)); return hashes.get(p) }
+    const hashOf = async (p) => { if (!hashes.has(p)) hashes.set(p, await cachedHash(p, opts.isCancelled)); return hashes.get(p) }
+    const memo = { aiCached: 0, aiNew: 0, dismissed: 0 }
+    const cancelled = () => ({ dest, copy: cfg.copy, items: [], cancelled: true, memo })
 
     // Índice de tamaños de toda la carpeta de categoría (incluye subcarpetas de año/mes, reglas…)
     async function sizeIndex(targetDir) {
@@ -154,10 +199,15 @@ function createEngine({ getConfig, userData, onProgress, ai = null }) {
 
     const items = []
     for (let i = 0; i < raw.length; i++) {
-      if (opts.isCancelled?.()) return { dest, copy: cfg.copy, items: [], cancelled: true }
+      if (opts.isCancelled?.()) return cancelled()
       const it = raw[i]
       const name = path.basename(it.src)
       const item = { id: String(i), src: it.src, name, isDir: it.isDir, project: it.project || null, skip: it.skip || null, note: null }
+      try {
+        const st0 = await fsp.stat(it.src)
+        item.dkey = fileKey(it.src, st0)
+        if (!item.skip && dismissedStore.get(item.dkey)) { item.dismissed = true; memo.dismissed++ }
+      } catch {}
 
       if (!item.skip && isInside(it.src, dest) && norm(path.dirname(it.src)) !== norm(dest)) item.skip = 'Ya organizado'
       if (!item.skip && it.isDir && (norm(it.src) === norm(dest) || isInside(dest, it.src))) item.skip = 'Contiene el destino'
@@ -194,6 +244,8 @@ function createEngine({ getConfig, userData, onProgress, ai = null }) {
         if (ai && st && !item.skip) {
           onProgress?.({ phase: 'ai', index: i + 1, total: raw.length, name })
           aiRes = await ai.classify(it.src, category, st, { needLabel: !rule })
+          if (aiRes?.cancelled || opts.isCancelled?.()) return cancelled()
+          if (aiRes && !aiRes.error) aiRes.cached ? memo.aiCached++ : memo.aiNew++
           if (aiRes) {
             item.aiDesc = aiRes.desc || null
             item.aiError = aiRes.error || null
@@ -227,6 +279,7 @@ function createEngine({ getConfig, userData, onProgress, ai = null }) {
           for (const other of idx.get(st.size) || []) {
             if (norm(other) === norm(it.src)) continue
             const [a, b] = await Promise.all([hashOf(it.src), hashOf(other)])
+            if (opts.isCancelled?.()) return cancelled()
             if (a && a === b) { item.duplicateOf = other; break }
           }
           if (item.duplicateOf) item.targetDir = item.private ? path.join(dest, PRIVATE, DUPLICATES) : path.join(dest, DUPLICATES, category)
@@ -237,11 +290,11 @@ function createEngine({ getConfig, userData, onProgress, ai = null }) {
       items.push(item)
       onProgress?.({ phase: 'plan', index: i + 1, total: raw.length })
     }
-    return { dest, copy: cfg.copy, items }
+    return { dest, copy: cfg.copy, items, memo }
   }
 
   // ---------- duplicados ya existentes en el destino ----------
-  async function planDuplicateScan() {
+  async function planDuplicateScan(opts = {}) {
     const cfg = getConfig()
     const dest = cfg.dest
     const files = []
@@ -264,7 +317,8 @@ function createEngine({ getConfig, userData, onProgress, ai = null }) {
     const groups = [...bySize.values()].filter((g) => g.length > 1)
     for (let gi = 0; gi < groups.length; gi++) {
       const byHash = new Map()
-      for (const f of groups[gi]) { const h = await hashFile(f.p); if (!h) continue; if (!byHash.has(h)) byHash.set(h, []); byHash.get(h).push(f) }
+      if (opts.isCancelled?.()) return { dest, copy: false, forceMove: true, items: [], cancelled: true }
+      for (const f of groups[gi]) { const h = await cachedHash(f.p, opts.isCancelled); if (!h) continue; if (!byHash.has(h)) byHash.set(h, []); byHash.get(h).push(f) }
       for (const same of byHash.values()) {
         if (same.length < 2) continue
         same.sort((a, b) => a.mtime - b.mtime) // conservamos el más antiguo
@@ -282,7 +336,15 @@ function createEngine({ getConfig, userData, onProgress, ai = null }) {
   async function execute(planned, { source = 'manual', ids = null } = {}) {
     const cfg = getConfig()
     const copy = planned.forceMove ? false : cfg.copy
-    const chosen = planned.items.filter((it) => !it.skip && (!ids || ids.includes(it.id)))
+    const chosen = planned.items.filter((it) => !it.skip && (ids ? ids.includes(it.id) : !it.dismissed))
+    // Lo que desmarcaste en la vista previa se recuerda; lo que eliges, se olvida de esa lista
+    if (ids && !planned.forceMove) {
+      for (const it of planned.items) {
+        if (it.skip || !it.dkey) continue
+        if (ids.includes(it.id)) dismissedStore.del(it.dkey)
+        else dismissedStore.set(it.dkey, {})
+      }
+    }
     const records = []
     const reserved = new Set()
     const summary = { moved: 0, skipped: planned.items.length - chosen.length, errors: 0, total: chosen.length, results: [] }
@@ -378,7 +440,9 @@ function createEngine({ getConfig, userData, onProgress, ai = null }) {
     return out
   }
 
-  return { plan, planDuplicateScan, execute, undo, getHistory, clearHistory, stats }
+  const memory = () => ({ hashes: hashStore.count(), dismissed: dismissedStore.count() })
+  const clearDismissed = () => dismissedStore.clear()
+  return { plan, planDuplicateScan, execute, undo, getHistory, clearHistory, stats, memory, clearDismissed }
 }
 
 module.exports = { createEngine, isInside, norm }

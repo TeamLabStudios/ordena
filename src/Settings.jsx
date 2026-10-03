@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Plus, X, Trash2, RotateCcw, FolderPlus, Play, RefreshCw, ChevronDown } from 'lucide-react'
 import { api, Switch, CatIcon } from './ui.jsx'
 import AISettings from './AISettings.jsx'
@@ -54,6 +54,9 @@ export default function Settings({ cfg, set, say, initial }) {
   const [sec, setSec] = useState(initial || 'general')
   const [newCat, setNewCat] = useState('')
   const [upd, setUpd] = useState(null)
+  const [mem, setMem] = useState(null)
+  const loadMem = () => api.memory().then(setMem)
+  useEffect(() => { if (sec === 'general') loadMem() }, [sec])
   const cats = Object.keys(cfg.categories)
 
   // --- categorías ---
@@ -125,6 +128,17 @@ export default function Settings({ cfg, set, say, initial }) {
               <Switch checked={cfg.copyExcludeBuild} onChange={(v) => set({ copyExcludeBuild: v })} disabled={!cfg.copy} label="Al copiar proyectos, omitir dependencias" hint="node_modules, bin, obj, target, dist, .venv… (al mover se mueve todo)." />
               <Switch checked={cfg.onTop} onChange={(v) => set({ onTop: v })} label="Ventana siempre visible" />
             </div>
+            <h3>Memoria</h3>
+            <p className="muted lead2">Para no repetir trabajo: si vuelves a pasar una carpeta, solo se analiza lo nuevo.</p>
+            {mem && (
+              <div className="memgrid">
+                <div><strong>{mem.ai.toLocaleString('es-ES')}</strong><span className="muted sm">archivos ya vistos por la IA</span>
+                  <button className="link sm" onClick={async () => { await api.aiClearCache(); loadMem(); say('Memoria de la IA borrada') }}>Borrar</button></div>
+                <div><strong>{mem.hashes.toLocaleString('es-ES')}</strong><span className="muted sm">huellas para detectar duplicados</span></div>
+                <div><strong>{mem.dismissed.toLocaleString('es-ES')}</strong><span className="muted sm">archivos que desmarcaste</span>
+                  {mem.dismissed > 0 && <button className="link sm" onClick={async () => { await api.clearDismissed(); loadMem(); say('Se volverán a proponer') }}>Volver a proponerlos</button>}</div>
+              </div>
+            )}
           </>
         )}
 

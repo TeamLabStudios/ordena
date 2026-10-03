@@ -288,7 +288,9 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle('file:show', (_e, p) => shell.showItemInFolder(p))
     ipcMain.handle('open:url', (_e, u) => { if (/^https:\/\//.test(u)) shell.openExternal(u) })
     ipcMain.handle('plan', (_e, { paths, contentsOnly }) => { cancelPlan = false; return enqueue(() => engine.plan(paths, { contentsOnly, isCancelled: () => cancelPlan })).then(storePlan) })
-    ipcMain.handle('plan:cancel', () => { cancelPlan = true })
+    ipcMain.handle('plan:cancel', () => { cancelPlan = true; ai.abort() })
+    ipcMain.handle('memory:get', () => ({ ...engine.memory(), ai: ai.cacheInfo().entries }))
+    ipcMain.handle('memory:clearDismissed', () => engine.clearDismissed())
     ipcMain.handle('ai:status', () => ai.status())
     ipcMain.handle('ai:gpu', () => ai.gpu().then((g) => ({ gpu: g, recommended: ai.recommend(g?.vramGB) })))
     ipcMain.handle('ai:pull', (_e, model) => ai.pull(model, (p) => send('ai-pull', p)))
@@ -304,7 +306,7 @@ if (!app.requestSingleInstanceLock()) {
       config.ai.enabled = true
       try { return { file: path.basename(f), category, ...(await ai.test(f, category)) } } finally { config.ai.enabled = wasEnabled }
     })
-    ipcMain.handle('plan:duplicates', () => enqueue(() => engine.planDuplicateScan()).then(storePlan))
+    ipcMain.handle('plan:duplicates', () => { cancelPlan = false; return enqueue(() => engine.planDuplicateScan({ isCancelled: () => cancelPlan })).then(storePlan) })
     ipcMain.handle('execute', (_e, { planId, ids }) => {
       const p = plans.get(planId)
       if (!p) return null
