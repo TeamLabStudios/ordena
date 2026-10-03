@@ -1,0 +1,83 @@
+{
+  "name": "ordena",
+  "productName": "Ordena",
+  "version": "3.0.0",
+  "description": "Organizador de archivos para Windows con arrastrar y soltar e IA local opcional",
+  "main": "electron/main.cjs",
+  "author": "david",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "start": "vite build && electron .",
+    "dist": "vite build && electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "lucide-react": "^1.51.0",
+    "nsfwjs": "^4.3.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "vite": "^8.3.2"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "exifr": "^7.1.3",
+    "mammoth": "^1.13.0",
+    "pdfjs-dist": "^6.3.289"
+  },
+  "build": {
+    "appId": "com.david.ordena",
+    "productName": "Ordena",
+    "copyright": "david",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "executableName": "Ordena"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Ordena",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "Ordena-Setup-${version}.exe",
+      "include": "build/installer.nsh",
+      "installerLanguages": [
+        "es_ES"
+      ],
+      "language": "3082",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://example.invalid/ordena"
+      }
+    ]
+  },
+  "license": "MIT"
+}
