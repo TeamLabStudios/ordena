@@ -115,8 +115,9 @@ Pega la clave en *Ajustes → IA*. Se guarda **cifrada** con el almacén seguro 
 
 ### Para usar
 
-1. Descarga `Ordena-Setup-x.y.z.exe` desde [Releases](../../releases).
+1. Descarga `Ordena-Setup-x.y.z.exe` desde [la última versión](https://github.com/TeamLabStudios/ordena/releases/latest).
 2. Instálalo. Windows puede avisar porque el instalador no está firmado: *Más información → Ejecutar de todas formas*.
+3. Las siguientes versiones se instalan solas: Ordena las busca en GitHub al arrancar.
 
 ### Para la IA local (opcional)
 
@@ -140,11 +141,17 @@ laya-serve        # escucha en http://127.0.0.1:8000
 Necesitas Node.js 20+.
 
 ```bash
-git clone https://github.com/<tu-usuario>/ordena.git
+git clone https://github.com/TeamLabStudios/ordena.git
 cd ordena
 npm install
 npm start          # compila la interfaz y abre la app
 npm run dist       # crea el instalador de Windows en release/
+```
+
+Para publicar una versión: sube `version` en `package.json`, ejecuta `npm run dist` y crea una Release `vX.Y.Z` en GitHub adjuntando `Ordena-Setup-X.Y.Z.exe`, su `.blockmap` y `latest.yml`. Las apps instaladas se actualizarán solas.
+
+```bash
+# (opcional) publicar directamente con un token: GH_TOKEN=... npx electron-builder --win --publish always
 ```
 
 ### Estructura

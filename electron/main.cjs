@@ -186,10 +186,11 @@ function flushOpen() {
 // ---------- Actualizaciones ----------
 async function checkUpdates() {
   if (!app.isPackaged) return { status: 'dev' }
-  if (!config.updateUrl) return { status: 'no-feed' }
   try {
     const { autoUpdater } = require('electron-updater')
-    autoUpdater.setFeedURL({ provider: 'generic', url: config.updateUrl })
+    // Por defecto: las Releases de GitHub (configuradas en package.json → build.publish).
+    // Si el usuario pone otra dirección en Ajustes, se usa esa.
+    if (config.updateUrl) autoUpdater.setFeedURL({ provider: 'generic', url: config.updateUrl })
     autoUpdater.autoDownload = true
     const r = await autoUpdater.checkForUpdates()
     const latest = r?.updateInfo?.version
@@ -198,7 +199,7 @@ async function checkUpdates() {
       return { status: 'downloading', version: latest }
     }
     return { status: 'latest' }
-  } catch (e) { return { status: 'error', message: e.message } }
+  } catch (e) { return { status: 'error', message: e.message.split('\n')[0].slice(0, 160) } }
 }
 
 // ---------- Ventana ----------
@@ -329,7 +330,7 @@ if (!app.requestSingleInstanceLock()) {
     refreshWatchers()
     refreshTray()
     handleArgs(process.argv)
-    if (app.isPackaged && config.updateUrl) setTimeout(checkUpdates, 8000)
+    if (app.isPackaged) setTimeout(checkUpdates, 8000) // busca versiones nuevas en GitHub al arrancar
   })
 
   app.on('before-quit', () => { quitting = true; ai?.dispose() })

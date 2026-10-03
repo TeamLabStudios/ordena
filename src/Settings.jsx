@@ -98,7 +98,7 @@ export default function Settings({ cfg, set, say, initial }) {
     setUpd(await api.checkUpdates())
   }
   const updText = {
-    checking: 'Buscando…', latest: 'Tienes la última versión.', 'no-feed': 'Añade primero la dirección de actualizaciones.',
+    checking: 'Buscando…', latest: 'Tienes la última versión.',
     dev: 'Solo funciona en la versión instalada.', downloading: `Descargando la versión ${upd?.version}… te avisaré al terminar.`,
     error: `No se pudo comprobar: ${upd?.message}`,
   }
@@ -232,10 +232,11 @@ export default function Settings({ cfg, set, say, initial }) {
             <h1>Actualizaciones</h1>
             <p className="muted lead">Versión {cfg.version}</p>
             <div className="card pad col">
-              <label className="muted sm">Dirección de actualizaciones (donde publiques latest.yml y el instalador)</label>
-              <input className="input" defaultValue={cfg.updateUrl} placeholder="https://github.com/usuario/ordena/releases/latest/download" onBlur={(e) => set({ updateUrl: e.target.value.trim() })} />
+              <p className="muted sm">Ordena busca versiones nuevas en <strong>github.com/TeamLabStudios/ordena</strong> al arrancar, las descarga en segundo plano y te avisa para reiniciar.</p>
+              <label className="muted sm">Otra dirección de actualizaciones (opcional, para servidores propios)</label>
+              <input className="input" defaultValue={cfg.updateUrl} placeholder="Vacío = GitHub" onBlur={(e) => set({ updateUrl: e.target.value.trim() })} />
               <div className="row gap">
-                <button className="ghost" onClick={checkUpd}><RefreshCw size={14} /> Buscar actualizaciones</button>
+                <button className="ghost" onClick={checkUpd}><RefreshCw size={14} /> Buscar ahora</button>
                 {upd && <span className="muted">{updText[upd.status]}</span>}
               </div>
             </div>
